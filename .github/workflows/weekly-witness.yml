@@ -132,6 +132,34 @@ jobs:
             done
           done
 
+          # --- Parse Hygiene Report for Stale Repositories ---
+          HYGIENE_REPORT="${WORK}/${DAY}-hygiene.md"
+          if gh api "repos/${OPS_REPO}/contents/reports/${DAY}-hygiene.md" --jq '.content' 2>/dev/null | base64 -d > "$HYGIENE_REPORT" 2>/dev/null; then
+            echo "" >> "$REPORT"
+            echo "## Stale Repositories (Actionable Signals)" >> "$REPORT"
+            echo "" >> "$REPORT"
+            echo "| Repo | Signal |" >> "$REPORT"
+            echo "|------|--------|" >> "$REPORT"
+
+            while IFS='|' read -r empty repo prs oldest push issues empty2; do
+              repo=$(echo "$repo" | xargs || true)
+              oldest=$(echo "$oldest" | xargs || true)
+              push=$(echo "$push" | xargs || true)
+              
+              if [ -n "$repo" ] && [ "$repo" != "Repo" ] && echo "$repo" | grep -q '\`'; then
+                repo_clean=$(echo "$repo" | tr -d '\`')
+                if [ "$oldest" != "-" ] && [ "$oldest" -gt 30 ] 2>/dev/null; then
+                  echo "| \`${repo_clean}\` | **FLAG**: Oldest PR is $oldest days old |" >> "$REPORT"
+                  FLAGGED=$((FLAGGED + 1))
+                fi
+                if [ "$push" != "-" ] && [ "$push" -gt 90 ] 2>/dev/null; then
+                  echo "| \`${repo_clean}\` | **FLAG**: No default branch push in $push days |" >> "$REPORT"
+                  FLAGGED=$((FLAGGED + 1))
+                fi
+              fi
+            done < <(tail -n +7 "$HYGIENE_REPORT" 2>/dev/null || true)
+          fi
+
           {
             echo ""
             echo "## Summary"
