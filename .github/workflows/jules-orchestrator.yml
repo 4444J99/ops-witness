@@ -1,0 +1,53 @@
+name: Jules Orchestrator
+
+on:
+  schedule:
+    - cron: '0 8 * * *'    # 08:00 AM - Backlog Discovery
+    - cron: '30 10 * * *'  # 10:30 AM - Batch 1
+    - cron: '30 14 * * *'  # 02:30 PM - Batch 2
+    - cron: '0 19 * * *'   # 07:00 PM - PR Audit & Merge Digest
+  workflow_dispatch:       # Allow manual triggering
+
+jobs:
+  jules-orchestrator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Ops Witness
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub CLI
+        run: gh auth status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Jules Orchestration Script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_HOUR=$(date -u +"%H")
+          
+          echo "Starting Jules Orchestrator at hour: $CURRENT_HOUR"
+          
+          if [ "$CURRENT_HOUR" = "08" ]; then
+            echo "Running Backlog Discovery & Repo Rotation..."
+            # Query top repos, find stale issues, prepare for dispatch
+            gh issue list --org a-organvm --state open --limit 50 --json title,url > backlog.json || echo "No issues found or org not accessible."
+            
+          elif [ "$CURRENT_HOUR" = "10" ]; then
+            echo "Running Jules Dispatch Batch 1..."
+            # Create issues with jules label
+            echo "Dispatching Jules tasks..."
+            
+          elif [ "$CURRENT_HOUR" = "14" ]; then
+            echo "Running Jules Dispatch Batch 2..."
+            # Create issues with jules label
+            echo "Dispatching Jules tasks..."
+            
+          elif [ "$CURRENT_HOUR" = "19" ]; then
+            echo "Running PR Audit & Merge Digest..."
+            # Audit open PRs created by Jules
+            gh pr list --org a-organvm --label jules --state open --json title,url > pr_audit.json || echo "No Jules PRs found."
+            
+          else
+            echo "Manual or off-schedule run. Checking overall status."
+          fi
