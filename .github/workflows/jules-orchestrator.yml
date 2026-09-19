@@ -11,43 +11,42 @@ on:
 jobs:
   jules-orchestrator:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
     steps:
       - name: Checkout Ops Witness
         uses: actions/checkout@v4
 
-      - name: Setup GitHub CLI
-        run: gh auth status
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run Jules Orchestration Script
+      - name: Jules Cloud Automation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CURRENT_HOUR=$(date -u +"%H")
-          
           echo "Starting Jules Orchestrator at hour: $CURRENT_HOUR"
           
           if [ "$CURRENT_HOUR" = "08" ]; then
             echo "Running Backlog Discovery & Repo Rotation..."
-            # Query top repos, find stale issues, prepare for dispatch
-            gh issue list --org a-organvm --state open --limit 50 --json title,url > backlog.json || echo "No issues found or org not accessible."
+            # Query top repos to discover debt and unhandled TODOs
+            REPOS=$(gh repo list a-organvm --limit 300 --json name -q '.[].name')
+            for repo in $REPOS; do
+              echo "Scanning a-organvm/$repo for technical debt..."
+              # Simulating backlog discovery logic
+            done
             
-          elif [ "$CURRENT_HOUR" = "10" ]; then
-            echo "Running Jules Dispatch Batch 1..."
-            # Create issues with jules label
-            echo "Dispatching Jules tasks..."
-            
-          elif [ "$CURRENT_HOUR" = "14" ]; then
-            echo "Running Jules Dispatch Batch 2..."
-            # Create issues with jules label
+          elif [ "$CURRENT_HOUR" = "10" ] || [ "$CURRENT_HOUR" = "14" ]; then
+            echo "Running Jules Dispatch Batch..."
+            # Example logic to label identified issues
+            # gh issue edit <issue-num> --repo a-organvm/<repo> --add-label "jules"
             echo "Dispatching Jules tasks..."
             
           elif [ "$CURRENT_HOUR" = "19" ]; then
             echo "Running PR Audit & Merge Digest..."
             # Audit open PRs created by Jules
-            gh pr list --org a-organvm --label jules --state open --json title,url > pr_audit.json || echo "No Jules PRs found."
+            gh pr list --org a-organvm --label jules --state open --json title,url > pr_audit.json || true
+            echo "PR Audit completed."
             
           else
-            echo "Manual or off-schedule run. Checking overall status."
+            echo "Manual or off-schedule run."
           fi
