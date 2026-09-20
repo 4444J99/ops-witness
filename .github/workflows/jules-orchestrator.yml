@@ -19,34 +19,16 @@ jobs:
       - name: Checkout Ops Witness
         uses: actions/checkout@v4
 
-      - name: Jules Cloud Automation
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install @google/generative-ai
+
+      - name: Run Gemini Spark Orchestrator
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          CURRENT_HOUR=$(date -u +"%H")
-          echo "Starting Jules Orchestrator at hour: $CURRENT_HOUR"
-          
-          if [ "$CURRENT_HOUR" = "08" ]; then
-            echo "Running Backlog Discovery & Repo Rotation..."
-            # Query top repos to discover debt and unhandled TODOs
-            REPOS=$(gh repo list a-organvm --limit 300 --json name -q '.[].name')
-            for repo in $REPOS; do
-              echo "Scanning a-organvm/$repo for technical debt..."
-              # Simulating backlog discovery logic
-            done
-            
-          elif [ "$CURRENT_HOUR" = "10" ] || [ "$CURRENT_HOUR" = "14" ]; then
-            echo "Running Jules Dispatch Batch..."
-            # Example logic to label identified issues
-            # gh issue edit <issue-num> --repo a-organvm/<repo> --add-label "jules"
-            echo "Dispatching Jules tasks..."
-            
-          elif [ "$CURRENT_HOUR" = "19" ]; then
-            echo "Running PR Audit & Merge Digest..."
-            # Audit open PRs created by Jules
-            gh pr list --org a-organvm --label jules --state open --json title,url > pr_audit.json || true
-            echo "PR Audit completed."
-            
-          else
-            echo "Manual or off-schedule run."
-          fi
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/jules-orchestrator.mjs
