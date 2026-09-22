@@ -1,34 +1,67 @@
-name: Jules Orchestrator
+name: Jules API witness
 
 on:
   schedule:
-    - cron: '0 8 * * *'    # 08:00 AM - Backlog Discovery
-    - cron: '30 10 * * *'  # 10:30 AM - Batch 1
-    - cron: '30 14 * * *'  # 02:30 PM - Batch 2
-    - cron: '0 19 * * *'   # 07:00 PM - PR Audit & Merge Digest
-  workflow_dispatch:       # Allow manual triggering
+    # Retain existing diagnostic opportunities (UTC); these are NOT dispatch timers.
+    - cron: '0 8 * * *'
+    - cron: '30 10 * * *'
+    - cron: '30 14 * * *'
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/jules-orchestrator.mjs'
+      - 'scripts/test-jules-api-witness.mjs'
+      - '.github/workflows/jules-orchestrator.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jules-api-witness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  jules-orchestrator:
+  contract:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-      contents: read
+    timeout-minutes: 5
     steps:
-      - name: Checkout Ops Witness
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Install Dependencies
-        run: npm install @google/generative-ai
-
-      - name: Run Gemini Spark Orchestrator
+          node-version: '22'
+      - run: node --test scripts/test-jules-api-witness.mjs
+  witness:
+    needs: contract
+    if: github.event_name != 'pull_request' || (github.actor == '4444J99' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: 4444J99/limen
+          ref: ec33e5bc4d5d097cac6569516f24ccabee78891a
+          path: .limen-api
+          sparse-checkout: cli/src/limen/jules_api.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read primary provider evidence, never manufacture or dispatch work
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: node scripts/jules-orchestrator.mjs
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          LIMEN_JULES_API_CLIENT: ${{ github.workspace }}/.limen-api/cli/src/limen/jules_api.py
+        run: node scripts/jules-orchestrator.mjs > jules-api-witness.json
+      - name: Preserve actual witness result, including authentication failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jules-api-witness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: jules-api-witness.json
+          if-no-files-found: warn
+          retention-days: 14
