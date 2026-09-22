@@ -19,8 +19,24 @@ const safeError = (code) => ({ schema_version: SCHEMA, status: 'unavailable',
   vendor_quota_remaining: null });
 const count = (value) => Number.isSafeInteger(value) && value >= 0;
 
-export function decodeObservation(child) {
-  if (child.error || child.signal) return { exitCode: 2, observation: safeError('observer_transport_unavailable') };
+// Date.parse alone coerces non-strings and normalizes impossible calendar dates.
+// Accept real timezone-qualified instants, including Python's microsecond output.
+const timestamp = (value) => {
+  if (typeof value !== 'string') return NaN;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return NaN;
+  const [, year, month, day, hour, minute, second, offsetHour = '00', offsetMinute = '00'] = match;
+  const y = Number(year); const m = Number(month); const d = Number(day);
+  const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (m < 1 || m > 12 || d < 1 || d > days[m - 1] || Number(hour) > 23
+      || Number(minute) > 59 || Number(second) > 59 || Number(offsetHour) > 23
+      || Number(offsetMinute) > 59) return NaN;
+  return Date.parse(value);
+};
+
+export function decodeObservation(child, context = {}) {
+  if (!child || typeof child !== 'object' || child.error || child.signal) return { exitCode: 2, observation: safeError('observer_transport_unavailable') };
   let row;
   try { row = JSON.parse(child.stdout); }
   catch { return { exitCode: 2, observation: safeError('observer_invalid_json') }; }
@@ -32,12 +48,25 @@ export function decodeObservation(child) {
   }
   if (row.pagination_complete !== true || !count(row.observed_rolling_starts)
       || !count(row.nonterminal_sessions) || !count(row.sessions_observed)
-      || !count(row.sources_observed) || !count(row.pages)
+      || !count(row.sources_observed) || !count(row.pages) || row.pages < 1
       || row.vendor_quota_remaining !== null || row.history_is_billing_ledger !== false
       || row.provider_completed_is_merged !== false || !row.states
       || typeof row.states !== 'object' || Array.isArray(row.states)
-      || !Number.isFinite(Date.parse(row.observed_at)) || !Number.isFinite(Date.parse(row.window_start))) {
+      || !Number.isFinite(timestamp(row.observed_at)) || !Number.isFinite(timestamp(row.window_start))) {
     return { exitCode: 2, observation: safeError('observer_incomplete_evidence') };
+  }
+  const observed = timestamp(row.observed_at); const windowStart = timestamp(row.window_start);
+  if (observed - windowStart !== 24 * 60 * 60 * 1000) {
+    return { exitCode: 2, observation: safeError('observer_invalid_window') };
+  }
+  // Standalone decoding can inspect historical evidence; a live invocation must
+  // additionally bind that evidence to its actual start/end, not a new wrapper date.
+  if ('startedAt' in context || 'endedAt' in context) {
+    const start = timestamp(context.startedAt); const end = timestamp(context.endedAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end
+        || observed < start || observed > end) {
+      return { exitCode: 2, observation: safeError('observer_outside_invocation') };
+    }
   }
   let total = 0; let active = 0;
   for (const [state, value] of Object.entries(row.states)) {
@@ -74,7 +103,7 @@ export function runWitness({ clientFile, env = process.env, runner = spawnSync }
     // Execute the already-hashed bytes, not a path that could change after validation.
     const child = runner(env.LIMEN_PYTHON_BIN || 'python3', ['-I', '-c', source.toString('utf8'), 'observe'],
       { encoding: 'utf8', env: childEnv, timeout: 110000, maxBuffer: 131072, shell: false });
-    result = decodeObservation(child);
+    result = decodeObservation(child, { startedAt: started, endedAt: new Date().toISOString() });
   } catch {
     result = { exitCode: 2, observation: safeError('observer_client_unavailable_or_unverified') };
   }

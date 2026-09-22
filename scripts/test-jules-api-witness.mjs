@@ -51,3 +51,65 @@ test('missing client never calls an alternative dispatcher', () => {
   const got = runWitness({ clientFile: '/does/not/exist', runner: () => { calls++; } });
   assert.equal(calls, 0); assert.equal(got.exitCode, 2); assert.equal(got.receipt.provider_mutations, 0);
 });
+test('timestamp coercions and non-RFC3339 strings rejected', () => {
+  for (const timestamp of [0, [], ['2026-09-21'], '2026-09-21', '09/21/2026', '2026-09-21T20:00:00']) {
+    const got = decodeObservation(child({ ...valid(), observed_at: timestamp }));
+    assert.equal(got.exitCode, 2, JSON.stringify(timestamp));
+    assert.equal(got.observation.observed_rolling_starts, null);
+  }
+});
+test('impossible calendar dates rejected instead of normalized', () => {
+  for (const timestamp of ['2026-02-30T20:00:00Z', '2026-02-29T20:00:00Z',
+    '2026-04-31T20:00:00Z', '2026-09-21T24:00:00Z']) {
+    assert.equal(decodeObservation(child({ ...valid(), observed_at: timestamp })).exitCode, 2, timestamp);
+  }
+});
+test('rolling window must be exactly 24 hours, never a calendar-day guess', () => {
+  for (const timestamp of ['2026-09-20T00:00:00Z', '2026-09-21T20:00:00Z', '2026-09-22T20:00:00Z']) {
+    assert.equal(decodeObservation(child({ ...valid(), window_start: timestamp })).exitCode, 2, timestamp);
+  }
+});
+test('timezone offsets and emitter microseconds preserve the same rolling window', () => {
+  const got = decodeObservation(child({ ...valid(), observed_at: '2026-09-21T16:00:00.123456-04:00',
+    window_start: '2026-09-20T20:00:00.123456+00:00' }));
+  assert.equal(got.exitCode, 0);
+});
+test('valid leap dates retained', () => {
+  const got = decodeObservation(child({ ...valid(), observed_at: '2028-03-01T00:00:00Z',
+    window_start: '2028-02-29T00:00:00Z' }));
+  assert.equal(got.exitCode, 0);
+});
+test('zero pages cannot assert completed pagination', () => {
+  assert.equal(decodeObservation(child({ ...valid(), pages: 0 })).exitCode, 2);
+});
+test('empty catalogue needs an actual observed page', () => {
+  assert.equal(decodeObservation(child({ ...valid(), states: {}, sessions_observed: 0,
+    nonterminal_sessions: 0, observed_rolling_starts: 0, sources_observed: 0 })).exitCode, 0);
+});
+test('invocation interval rejects stale and future replay', () => {
+  for (const context of [
+    { startedAt: '2026-09-22T20:00:00Z', endedAt: '2026-09-22T20:02:00Z' },
+    { startedAt: '2026-09-20T20:00:00Z', endedAt: '2026-09-20T20:02:00Z' },
+  ]) {
+    const got = decodeObservation(child(valid()), context);
+    assert.equal(got.exitCode, 2);
+    assert.equal(got.observation.nonterminal_sessions, null);
+  }
+});
+test('observed time is bounded by actual invocation, inclusive', () => {
+  for (const context of [
+    { startedAt: '2026-09-21T19:59:00Z', endedAt: '2026-09-21T20:01:00Z' },
+    { startedAt: '2026-09-21T20:00:00Z', endedAt: '2026-09-21T20:00:00Z' },
+  ]) assert.equal(decodeObservation(child(valid()), context).exitCode, 0);
+});
+test('incomplete, malformed, or inverted invocation interval rejected', () => {
+  for (const context of [
+    { startedAt: '2026-09-21T19:59:00Z' },
+    { endedAt: '2026-09-21T20:01:00Z' },
+    { startedAt: 0, endedAt: '2026-09-21T20:01:00Z' },
+    { startedAt: '2026-09-21T20:01:00Z', endedAt: '2026-09-21T19:59:00Z' },
+  ]) assert.equal(decodeObservation(child(valid()), context).exitCode, 2);
+});
+test('missing subprocess result does not throw or claim success', () => {
+  for (const result of [null, undefined, 0]) assert.equal(decodeObservation(result).exitCode, 2);
+});
