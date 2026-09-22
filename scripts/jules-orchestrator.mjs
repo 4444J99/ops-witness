@@ -34,6 +34,13 @@ const timestamp = (value) => {
       || Number(offsetMinute) > 59) return NaN;
   return Date.parse(value);
 };
+// Date.parse truncates fractions to milliseconds. Use the validated whole-second
+// epoch plus all accepted fractional digits for exact rolling-window arithmetic.
+const nanoseconds = (value) => {
+  const fraction = /\.(\d{1,9})(?=Z|[+-]\d{2}:\d{2}$)/.exec(value)?.[1] || '';
+  const wholeSecond = value.replace(/\.\d{1,9}(?=Z|[+-]\d{2}:\d{2}$)/, '');
+  return BigInt(Date.parse(wholeSecond)) * 1000000n + BigInt(fraction.padEnd(9, '0'));
+};
 
 export function decodeObservation(child, context = {}) {
   if (!child || typeof child !== 'object' || child.error || child.signal) return { exitCode: 2, observation: safeError('observer_transport_unavailable') };
@@ -55,8 +62,8 @@ export function decodeObservation(child, context = {}) {
       || !Number.isFinite(timestamp(row.observed_at)) || !Number.isFinite(timestamp(row.window_start))) {
     return { exitCode: 2, observation: safeError('observer_incomplete_evidence') };
   }
-  const observed = timestamp(row.observed_at); const windowStart = timestamp(row.window_start);
-  if (observed - windowStart !== 24 * 60 * 60 * 1000) {
+  const observed = timestamp(row.observed_at);
+  if (nanoseconds(row.observed_at) - nanoseconds(row.window_start) !== 86400000000000n) {
     return { exitCode: 2, observation: safeError('observer_invalid_window') };
   }
   // Standalone decoding can inspect historical evidence; a live invocation must

@@ -113,3 +113,23 @@ test('incomplete, malformed, or inverted invocation interval rejected', () => {
 test('missing subprocess result does not throw or claim success', () => {
   for (const result of [null, undefined, 0]) assert.equal(decodeObservation(result).exitCode, 2);
 });
+
+test('sub-millisecond shorter and longer windows rejected exactly', () => {
+  for (const [observed, start] of [
+    ['2026-09-21T20:00:00.0001Z', '2026-09-20T20:00:00.0009Z'],
+    ['2026-09-21T20:00:00.0009Z', '2026-09-20T20:00:00.0001Z'],
+    ['2026-09-21T20:00:00.123456789Z', '2026-09-20T20:00:00.123456788Z'],
+    ['2026-09-21T20:00:00.123456788Z', '2026-09-20T20:00:00.123456789Z'],
+  ]) {
+    const got = decodeObservation(child({ ...valid(), observed_at: observed, window_start: start }));
+    assert.equal(got.exitCode, 2, `${observed} / ${start}`);
+    assert.equal(got.observation.error_code, 'observer_invalid_window');
+  }
+});
+test('equivalent fractional precision and timezone offsets retained', () => {
+  for (const [observed, start] of [
+    ['2026-09-21T16:00:00.123456789-04:00', '2026-09-20T20:00:00.123456789Z'],
+    ['2026-09-21T20:00:00.100000000Z', '2026-09-20T20:00:00.1+00:00'],
+    ['2026-09-21T20:00:00Z', '2026-09-20T20:00:00.000000000Z'],
+  ]) assert.equal(decodeObservation(child({ ...valid(), observed_at: observed, window_start: start })).exitCode, 0);
+});
