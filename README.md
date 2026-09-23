@@ -2,6 +2,9 @@
 
 **Bookend log + cross-plane witness.**
 
+> **Status**: **Parked (Non-shippable)**
+> `ops-witness` is an internal audit surface and reconciliation layer for tri-plane scheduler logs. It is not a product-facing component and carries no deployment or end-user release artifact path.
+
 This repository is the **reconciliation layer** for the tri-plane scheduler. It does not run
 scheduled work itself (beyond its own keepalive) — it *watches* the planes that do, and
 records whether they actually fired and finished.
