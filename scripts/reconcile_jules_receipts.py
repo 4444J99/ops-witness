@@ -66,6 +66,12 @@ Output (Derived Observation JSON emitted to stdout):
 
 Exit Codes:
   0: Reconciliation succeeded, derived observation written to stdout.
+
+The output also preserves canonical events with their original source timestamps,
+explicit partial coverage, and per-request/provider evidence histories. Timestamp
+comparisons use integer nanoseconds. A provider ID has one original acceptance
+instant; contradictory later acceptances are rejected, never counted as starts.
+The caller must authenticate primary observations before supplying the ledger.
   1 or 2: Validation failure, malformed JSON, or invalid arguments.
 """
 
@@ -101,35 +107,51 @@ ISO_REGEX = re.compile(
 )
 
 
-def parse_iso_timestamp(ts_str: Any) -> datetime:
-    if not isinstance(ts_str, str) or isinstance(ts_str, bool):
+NANOSECONDS = 1_000_000_000
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def parse_iso_timestamp(ts_str: Any) -> int:
+    """Return exact integer nanoseconds; never round admitted source precision."""
+    if not isinstance(ts_str, str):
         raise ValueError("Timestamp must be a string")
-    match = ISO_REGEX.match(ts_str)
+    match = ISO_REGEX.fullmatch(ts_str)
     if not match:
         raise ValueError(f"Invalid or naive ISO 8601 timestamp format: {ts_str!r}")
+    year, month, day, hour, minute, second, fraction, offset = match.groups()
+    zone = timezone.utc
+    if offset != "Z":
+        offset_hour, offset_minute = int(offset[1:3]), int(offset[4:6])
+        if offset_hour > 23 or offset_minute > 59:
+            raise ValueError(f"Invalid timezone offset: {offset!r}")
+        sign = 1 if offset[0] == "+" else -1
+        zone = timezone(sign * timedelta(hours=offset_hour, minutes=offset_minute))
     try:
-        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except Exception as e:
-        raise ValueError(f"Invalid calendar timestamp: {ts_str!r}") from e
-    if dt.tzinfo is None:
-        raise ValueError(f"Naive timestamp without timezone offset: {ts_str!r}")
-    return dt.astimezone(timezone.utc)
+        dt = datetime(int(year), int(month), int(day), int(hour), int(minute),
+                      int(second), tzinfo=zone).astimezone(timezone.utc)
+        delta = dt - EPOCH
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid calendar timestamp: {ts_str!r}") from exc
+    seconds = delta.days * 86400 + delta.seconds
+    return seconds * NANOSECONDS + int((fraction or "").ljust(9, "0"))
 
 
-def format_iso_timestamp(dt: datetime) -> str:
-    dt_utc = dt.astimezone(timezone.utc)
-    return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+def format_iso_timestamp(instant: int) -> str:
+    seconds, fraction = divmod(instant, NANOSECONDS)
+    dt = EPOCH + timedelta(seconds=seconds)
+    digits = f"{fraction:09d}".rstrip("0").ljust(3, "0")
+    return f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}T{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{digits}Z"
 
 
 def validate_nonempty_string(val: Any, field_name: str) -> str:
-    if not isinstance(val, str) or isinstance(val, bool) or not val:
+    if not isinstance(val, str) or isinstance(val, bool) or not val.strip():
         raise ValueError(f"Field '{field_name}' must be a non-empty string, got {val!r}")
     return val
 
 
 def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
     as_of_dt = parse_iso_timestamp(as_of_str)
-    window_start_dt = as_of_dt - timedelta(hours=24)
+    window_start_dt = as_of_dt - 86400 * NANOSECONDS
 
     if not isinstance(data, dict) or isinstance(data, bool):
         raise ValueError("Envelope must be a JSON object")
@@ -236,10 +258,10 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
             task_to_request[p_id] = r_id
 
     # 3. Sort by occurred_at_dt (timestamps, not file order)
-    parsed_events.sort(key=lambda x: x["occurred_at_dt"])
+    parsed_events.sort(key=lambda x: (x["occurred_at_dt"], x["evidence_id"]))
 
     # Check for ambiguous conflicting state transitions at the exact same timestamp
-    ts_groups: Dict[Tuple[datetime, str], List[Dict[str, Any]]] = {}
+    ts_groups: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
     for ev in parsed_events:
         entity_key = ev["provider_task_id"] or ev["request_id"]
         group_key = (ev["occurred_at_dt"], entity_key)
@@ -251,7 +273,7 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
             # Check if there are distinct kinds at the exact same timestamp
             if len(set(kinds)) > 1:
                 raise ValueError(
-                    f"Ambiguous conflicting state transitions at timestamp {ts.isoformat()} for entity {entity!r}: {kinds}"
+                    f"Ambiguous conflicting state transitions at timestamp {format_iso_timestamp(ts)} for entity {entity!r}: {kinds}"
                 )
 
     # 4. Process State Machine Transitions
@@ -277,8 +299,29 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
                 )
             request_has_creation_failed[r_id] = True
 
+    # A dispatch attempt has one original request instant, not a reusable slot.
+    request_times: Dict[str, int] = {}
+    accepted_times_by_request: Dict[str, int] = {}
+    failed_times: Dict[str, int] = {}
+    for ev in parsed_events:
+        rid, instant = ev["request_id"], ev["occurred_at_dt"]
+        if ev["kind"] == "requested":
+            previous = request_times.setdefault(rid, instant)
+            if previous != instant:
+                raise ValueError(f"Conflicting request timestamps for attempt {rid!r}")
+        elif ev["kind"] == "accepted":
+            accepted_times_by_request.setdefault(rid, instant)
+        elif ev["kind"] == "creation_failed":
+            failed_times.setdefault(rid, instant)
+    for rid, instant in request_times.items():
+        if rid in failed_times and instant > failed_times[rid]:
+            raise ValueError(f"A new request after creation_failed requires a new attempt: {rid!r}")
+        if rid in accepted_times_by_request and instant > accepted_times_by_request[rid]:
+            raise ValueError(f"Request occurs after acceptance for attempt {rid!r}")
+
     # Track Provider Tasks state step-by-step
     task_accepted_ever: Dict[str, bool] = {}
+    task_original_acceptance: Dict[str, int] = {}
     task_accepted_24h: Dict[str, bool] = {}
     task_execution_holding: Dict[str, bool] = {}
     task_latest_terminal: Dict[str, Optional[str]] = {}
@@ -290,6 +333,12 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
         dt = ev["occurred_at_dt"]
 
         if kind == "accepted":
+            if p_id in task_original_acceptance:
+                if task_original_acceptance[p_id] != dt:
+                    raise ValueError(f"Conflicting acceptance timestamps for provider task {p_id!r}")
+                # Corroboration is evidence, not another start or a new execution hold.
+                continue
+            task_original_acceptance[p_id] = dt
             task_accepted_ever[p_id] = True
             task_execution_holding[p_id] = True
             task_latest_terminal[p_id] = None
@@ -351,8 +400,7 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
     work_to_tasks: Dict[str, List[str]] = {}
     for p_id, w_key in task_to_work.items():
         work_to_tasks.setdefault(w_key, []).append(p_id)
-    for w_key in work_to_tasks:
-        work_to_tasks[w_key].sort()
+    work_to_tasks = {key: sorted(value) for key, value in sorted(work_to_tasks.items())}
 
     duplicate_work_details = {
         w_key: tasks for w_key, tasks in work_to_tasks.items() if len(tasks) > 1
@@ -366,9 +414,23 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
     first_event_at = format_iso_timestamp(parsed_events[0]["occurred_at_dt"]) if parsed_events else None
     last_event_at = format_iso_timestamp(parsed_events[-1]["occurred_at_dt"]) if parsed_events else None
 
+    canonical_events = [
+        {key: value for key, value in event.items() if key != "occurred_at_dt"}
+        for event in parsed_events
+    ]
+    request_history = {rid: [] for rid in all_request_ids}
+    provider_history = {pid: [] for pid in all_provider_task_ids}
+    for event in canonical_events:
+        request_history[event["request_id"]].append(event["evidence_id"])
+        if event["provider_task_id"] is not None:
+            provider_history[event["provider_task_id"]].append(event["evidence_id"])
+
     output = {
         "schema": "jules-derived-observation/v1",
         "status": "derived",
+        "coverage": "partial",
+        "as_of_source": as_of_str,
+        "events": canonical_events,
         "as_of": format_iso_timestamp(as_of_dt),
         "window_start": format_iso_timestamp(window_start_dt),
         "accepted_provider_ids_24h": accepted_provider_ids_24h,
@@ -398,6 +460,8 @@ def reconcile(data: Any, as_of_str: str) -> Dict[str, Any]:
             "request_ids": all_request_ids,
             "provider_task_ids": all_provider_task_ids,
             "work_to_provider_tasks": work_to_tasks,
+            "request_history": request_history,
+            "provider_history": provider_history,
         },
     }
     return output
