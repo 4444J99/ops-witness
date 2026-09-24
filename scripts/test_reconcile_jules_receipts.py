@@ -569,12 +569,14 @@ class TestReconcileJulesReceipts(unittest.TestCase):
                 initial_bytes = f.read()
 
             script_path = os.path.join(os.path.dirname(__file__), "reconcile_jules_receipts.py")
+            child_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 
             # Run valid CLI call
             proc = subprocess.run(
                 [sys.executable, script_path, tf_path, "--as-of", self.as_of],
                 capture_output=True,
-                text=True
+                text=True,
+                env=child_env
             )
             self.assertEqual(proc.returncode, 0)
             out_data = json.loads(proc.stdout)
@@ -589,7 +591,8 @@ class TestReconcileJulesReceipts(unittest.TestCase):
             proc_bad = subprocess.run(
                 [sys.executable, script_path, tf_path, "--as-of", "invalid-timestamp"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=child_env
             )
             self.assertNotEqual(proc_bad.returncode, 0)
 
