@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: node --test scripts/test-jules-api-witness.mjs
@@ -37,8 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: 4444J99/limen
           ref: ec33e5bc4d5d097cac6569516f24ccabee78891a
@@ -46,10 +46,10 @@ jobs:
           sparse-checkout: cli/src/limen/jules_api.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: Read primary provider evidence, never manufacture or dispatch work
@@ -59,7 +59,7 @@ jobs:
         run: node scripts/jules-orchestrator.mjs > jules-api-witness.json
       - name: Preserve actual witness result, including authentication failures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jules-api-witness-${{ github.run_id }}-${{ github.run_attempt }}
           path: jules-api-witness.json
