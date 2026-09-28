@@ -1,0 +1,8 @@
+organ: ops
+tier: infrastructure
+status: parked
+produces:
+  - audit/YYYY-MM-DD-witness.md
+consumes:
+  - ops bookends
+  - scheduler API bookends
